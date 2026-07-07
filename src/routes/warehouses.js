@@ -1,0 +1,12 @@
+const express = require('express');
+const router = express.Router();
+const ctrl = require('../controllers/warehouseController');
+const { authenticate, authorize } = require('../middleware/auth');
+router.use(authenticate);
+router.get('/', ctrl.getAll);
+router.get('/:id/inventory', ctrl.getInventory);
+router.get('/:id', ctrl.getById);
+router.post('/', authorize('super_admin', 'admin'), ctrl.create);
+router.put('/:id', authorize('super_admin', 'admin'), ctrl.update);
+router.delete('/:id', authorize('super_admin'), ctrl.remove);
+module.exports = router;
