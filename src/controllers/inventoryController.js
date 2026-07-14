@@ -13,6 +13,8 @@ const getInventory = async (req, res) => {
       params.push(warehouse_id);
       conditions.push(`i.warehouse_id = $${params.length}`);
     }
+    params.push(req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id);
+    conditions.push(`p.created_by = $${params.length}`);
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     params.push(limit, offset);
@@ -69,12 +71,12 @@ const stockIn = async (req, res) => {
     if (inv) {
       await pool.query('UPDATE inventory SET current_stock = $1 WHERE id = $2', [inv.current_stock + quantity, inv.id]);
     } else {
-      await pool.query('INSERT INTO inventory (product_id, warehouse_id, current_stock) VALUES ($1,$2,$3)', [product_id, warehouse_id, quantity]);
+      await pool.query('INSERT INTO inventory (product_id, warehouse_id, current_stock, created_by) VALUES ($1,$2,$3,$4)', [product_id, warehouse_id, quantity, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]);
     }
 
     await pool.query(
       'INSERT INTO inventory_transactions (product_id, warehouse_id, transaction_type, quantity, notes, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
-      [product_id, warehouse_id, 'stock_in', quantity, notes,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      [product_id, warehouse_id, 'stock_in', quantity, notes, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     successResponse(res, null, 'Stock added successfully');
   } catch (err) {
@@ -96,7 +98,7 @@ const stockOut = async (req, res) => {
     await pool.query('UPDATE inventory SET current_stock = $1 WHERE id = $2', [inv.current_stock - quantity, inv.id]);
     await pool.query(
       'INSERT INTO inventory_transactions (product_id, warehouse_id, transaction_type, quantity, notes, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
-      [product_id, warehouse_id, 'stock_out', -quantity, notes,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      [product_id, warehouse_id, 'stock_out', -quantity, notes, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     successResponse(res, null, 'Stock removed successfully');
   } catch (err) {
@@ -118,7 +120,7 @@ const adjustment = async (req, res) => {
     if (inv) {
       await pool.query('UPDATE inventory SET current_stock = $1 WHERE id = $2', [new_quantity, inv.id]);
     } else {
-      await pool.query('INSERT INTO inventory (product_id, warehouse_id, current_stock) VALUES ($1,$2,$3)', [product_id, warehouse_id, new_quantity]);
+      await pool.query('INSERT INTO inventory (product_id, warehouse_id, current_stock, created_by) VALUES ($1,$2,$3,$4)', [product_id, warehouse_id, new_quantity, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]);
     }
 
     await pool.query(
@@ -172,7 +174,7 @@ const transfer = async (req, res) => {
         if (toInv) {
           await client.query('UPDATE inventory SET current_stock = $1 WHERE id = $2', [toInv.current_stock + item.quantity, toInv.id]);
         } else {
-          await client.query('INSERT INTO inventory (product_id, warehouse_id, current_stock) VALUES ($1,$2,$3)', [item.product_id, to_warehouse_id, item.quantity]);
+          await client.query('INSERT INTO inventory (product_id, warehouse_id, current_stock, created_by) VALUES ($1,$2,$3,$4)', [item.product_id, to_warehouse_id, item.quantity, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]);
         }
       }
 
@@ -200,6 +202,8 @@ const getTransactions = async (req, res) => {
     if (product_id) { params.push(product_id); conditions.push(`it.product_id = $${params.length}`); }
     if (warehouse_id) { params.push(warehouse_id); conditions.push(`it.warehouse_id = $${params.length}`); }
     if (transaction_type) { params.push(transaction_type); conditions.push(`it.transaction_type = $${params.length}`); }
+    params.push(req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id);
+    conditions.push(`p.created_by = $${params.length}`);
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     params.push(limit, offset);

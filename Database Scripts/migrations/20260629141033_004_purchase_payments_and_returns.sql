@@ -11,12 +11,6 @@ CREATE TABLE IF NOT EXISTS purchase_payments (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-ALTER TABLE purchase_payments ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "select_purchase_payments" ON purchase_payments FOR SELECT TO authenticated USING (true);
-CREATE POLICY "insert_purchase_payments" ON purchase_payments FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "update_purchase_payments" ON purchase_payments FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "delete_purchase_payments" ON purchase_payments FOR DELETE TO authenticated USING (true);
-
 -- Add payment columns to purchases if not exists
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20) DEFAULT 'unpaid';
 ALTER TABLE purchases ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50);
@@ -55,17 +49,6 @@ CREATE TABLE IF NOT EXISTS purchase_return_items (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-ALTER TABLE purchase_returns ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "select_purchase_returns" ON purchase_returns FOR SELECT TO authenticated USING (true);
-CREATE POLICY "insert_purchase_returns" ON purchase_returns FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "update_purchase_returns" ON purchase_returns FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "delete_purchase_returns" ON purchase_returns FOR DELETE TO authenticated USING (true);
-
-ALTER TABLE purchase_return_items ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "select_purchase_return_items" ON purchase_return_items FOR SELECT TO authenticated USING (true);
-CREATE POLICY "insert_purchase_return_items" ON purchase_return_items FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "update_purchase_return_items" ON purchase_return_items FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "delete_purchase_return_items" ON purchase_return_items FOR DELETE TO authenticated USING (true);
 
 -- Sale returns
 CREATE TABLE IF NOT EXISTS sale_returns (
@@ -99,14 +82,3 @@ CREATE TABLE IF NOT EXISTS sale_return_items (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-ALTER TABLE sale_returns ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "select_sale_returns" ON sale_returns FOR SELECT TO authenticated USING (true);
-CREATE POLICY "insert_sale_returns" ON sale_returns FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "update_sale_returns" ON sale_returns FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "delete_sale_returns" ON sale_returns FOR DELETE TO authenticated USING (true);
-
-ALTER TABLE sale_return_items ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "select_sale_return_items" ON sale_return_items FOR SELECT TO authenticated USING (true);
-CREATE POLICY "insert_sale_return_items" ON sale_return_items FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "update_sale_return_items" ON sale_return_items FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
-CREATE POLICY "delete_sale_return_items" ON sale_return_items FOR DELETE TO authenticated USING (true);

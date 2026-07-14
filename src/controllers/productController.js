@@ -62,18 +62,20 @@ const getById = async (req, res) => {
     const params = [req.params.id];
     const scope = buildScopeWhere(req.user, 'p', params, 'created_by');
     const where = `p.id = $1 AND p.deleted_at IS NULL${scope.fragment ? ` AND ${scope.fragment}` : ''}`;
+    console.log('getById where:', where, 'params:', params);
     const { rows } = await pool.query(
       `SELECT p.*, c.id AS cat_id, c.name AS cat_name, u.id AS unit_id_ref, u.name AS unit_name, u.abbreviation AS unit_abbr
        FROM products p
        LEFT JOIN categories c ON c.id = p.category_id
        LEFT JOIN units u ON u.id = p.unit_id
        WHERE ${where}`,
-      params
+      [req.params.id, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     if (!rows[0]) return errorResponse(res, 'Product not found', 404);
     const { cat_id, cat_name, unit_id_ref, unit_name, unit_abbr, ...rest } = rows[0];
     successResponse(res, { ...rest, category: cat_id ? { id: cat_id, name: cat_name } : null, unit: unit_id_ref ? { id: unit_id_ref, name: unit_name, abbreviation: unit_abbr } : null });
   } catch (err) {
+    console.error(err);
     errorResponse(res, 'Failed to fetch product', 500);
   }
 };

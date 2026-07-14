@@ -1,5 +1,8 @@
 const pool = require('../config/database');
 const { successResponse, errorResponse, buildPaginationQuery, buildSortQuery, generateUniqueCode } = require('../utils/helpers');
+const PDFDocument = require('pdfkit');
+const { buildTaxInvoicePDF } = require('../utils/pdfbuilder'); 
+const numberToWords = require('../utils/numberToWords'); 
 
 const getAll = async (req, res) => {
   try {
@@ -16,7 +19,7 @@ const getAll = async (req, res) => {
     if (customer_id) { params.push(customer_id); conditions.push(`s.customer_id = $${params.length}`); }
     if (from_date) { params.push(from_date); conditions.push(`s.sale_date >= $${params.length}`); }
     if (to_date) { params.push(to_date); conditions.push(`s.sale_date <= $${params.length}`); }
-      params.push( req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id);
+    params.push(req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id);
     conditions.push(`s.created_by = $${params.length}`);
 
     params.push(limit, offset);
@@ -103,14 +106,14 @@ const create = async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO sales (sale_number, customer_id, warehouse_id, sale_date, due_date, subtotal, discount_amount, tax_amount, total_amount, notes, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [sale_number, customer_id, warehouse_id, sale_date, due_date, subtotal, discount_amount || 0, tax_amount, total_amount, notes,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      [sale_number, customer_id, warehouse_id, sale_date, due_date, subtotal, discount_amount || 0, tax_amount, total_amount, notes, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     const sale = rows[0];
 
     for (const item of saleItems) {
       await pool.query(
         'INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, discount_percentage, tax_percentage, tax_amount, total_price, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-        [sale.id, item.product_id, item.quantity, item.unit_price, item.discount_percentage || 0, item.tax_percentage || 0, item.tax_amount, item.total_price,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+        [sale.id, item.product_id, item.quantity, item.unit_price, item.discount_percentage || 0, item.tax_percentage || 0, item.tax_amount, item.total_price, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
       );
     }
 
@@ -121,7 +124,7 @@ const create = async (req, res) => {
       }
       await pool.query(
         'INSERT INTO inventory_transactions (product_id, warehouse_id, transaction_type, quantity, reference_type, reference_id, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [item.product_id, warehouse_id, 'sale', -item.quantity, 'sale', sale.id,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+        [item.product_id, warehouse_id, 'sale', -item.quantity, 'sale', sale.id, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
       );
     }
 
@@ -131,6 +134,7 @@ const create = async (req, res) => {
   }
 };
 
+
 const generatePDF = async (req, res) => {
   try {
     const { rows: sRows } = await pool.query(
@@ -138,48 +142,130 @@ const generatePDF = async (req, res) => {
        FROM sales s
        LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN warehouses w ON w.id = s.warehouse_id
-       WHERE s.id = $1`,
-      [req.params.id]
+       WHERE s.id = $1 AND s.created_by = $2`,
+      [req.params.id, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     if (!sRows[0]) return errorResponse(res, 'Sale not found', 404);
     const sale = sRows[0];
-
+ 
     const { rows: items } = await pool.query(
-      `SELECT si.*, pr.name AS product_name, pr.code AS product_code,
-              u.abbreviation AS unit_abbreviation
+      `SELECT si.*, pr.name AS product_name, pr.code AS product_code, 
+              pr.brand, u.abbreviation AS unit_abbreviation
        FROM sale_items si
        LEFT JOIN products pr ON pr.id = si.product_id
        LEFT JOIN units u ON u.id = pr.unit_id
-       WHERE si.sale_id = $1`,
-      [req.params.id]
+       WHERE si.sale_id = $1 AND si.created_by = $2`,
+      [req.params.id, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
-
-    const PDFDocument = require('pdfkit');
-    const { buildInvoicePDF } = require('../utils/pdfBuilder');
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+ 
+    const doc = new PDFDocument({ margin: 0, size: 'A4' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="INV-${sale.sale_number}.pdf"`);
     doc.pipe(res);
-
-    buildInvoicePDF(doc, {
+ 
+    const customer = sale.customer || {};
+ 
+    // ---- build GST-rate breakup (12/18/28 rows like the sample) ----
+    const ratesMap = {};
+    items.forEach((i) => {
+      const rate = Number(i.gst_percent ?? i.tax_percent ?? 0);
+      const qty = Number(i.quantity || 0);
+      const unitPrice = Number(i.unit_price || i.price || 0);
+      const discPct = Number(i.discount_percent || 0);
+      const taxable = Number(i.taxable_amount ?? qty * unitPrice);
+      const taxAmt = Number(i.tax_amount ?? (taxable * rate) / 100);
+ 
+      if (!ratesMap[rate]) ratesMap[rate] = { rate, total: 0, sch: 0, disc: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0 };
+      ratesMap[rate].total += taxable;
+      ratesMap[rate].taxable += taxable;
+      ratesMap[rate].igst += sale.is_igst ? taxAmt : 0;
+      if (!sale.is_igst) {
+        ratesMap[rate].cgst += taxAmt / 2;
+        ratesMap[rate].sgst += taxAmt / 2;
+      }
+    });
+    const gstBreakup = Object.values(ratesMap).sort((a, b) => a.rate - b.rate);
+ 
+    buildTaxInvoicePDF(doc, {
       docType: 'TAX INVOICE',
       number: sale.sale_number,
-      date: sale.sale_date,
-      dueDate: sale.due_date,
-      entity: { billTo: sale.customer },
-      items: items.map(i => ({ ...i, product: { unit: { abbreviation: i.unit_abbreviation } } })),
+      date: sale.sale_date ? new Date(sale.sale_date).toLocaleDateString('en-GB') : '',
+      poNo: sale.po_number || '',
+      poDate: sale.po_date ? new Date(sale.po_date).toLocaleDateString('en-GB') : '',
+      despatchDocNo: sale.despatch_doc_no || '',
+      destination: sale.destination || '',
+      ewayBill: sale.eway_bill_no || '',
+      irnNo: sale.irn_no || '',
+      ackNo: sale.ack_no || '',
+      terms: sale.terms_of_delivery || '',
+ 
+      company: {
+        name: process.env.COMPANY_NAME || 'Company Name',
+        address: process.env.COMPANY_ADDRESS || '',
+        phone: process.env.COMPANY_PHONE || '',
+        email: process.env.COMPANY_EMAIL || '',
+        gstin: process.env.COMPANY_GSTIN || '',
+      },
+ 
+      entity: {
+        billTo: {
+          name: customer.name || customer.customer_name || customer.company_name || 'N/A',
+          address: customer.address || customer.billing_address || '',
+          gstin: customer.gstin || customer.gst_number || '',
+          fssai: customer.fssai_no || '',
+          phone: customer.phone || customer.mobile || customer.contact_phone || '',
+        },
+        // uses same details unless you store a separate shipping address on the sale/customer
+        shipTo: {
+          name: customer.name || customer.customer_name || customer.company_name || 'N/A',
+          address: sale.shipping_address || customer.address || customer.billing_address || '',
+          gstin: customer.gstin || customer.gst_number || '',
+          fssai: customer.fssai_no || '',
+          placeOfSupply: sale.place_of_supply || '',
+          phone: customer.phone || customer.mobile || customer.contact_phone || '',
+        },
+      },
+ 
+      items: items.map((i) => ({
+        part_no: i.product_code || '',
+        product_name: i.product_name || 'Item',
+        brand: i.brand || '',
+        hsn: i.hsn_code || '',
+        quantity: Number(i.quantity || 0),
+        mrp: Number(i.mrp || i.unit_price || 0),
+        discount: Number(i.discount_percent || 0),
+        unit_price: Number(i.unit_price || i.price || 0),
+        gst_percent: Number(i.gst_percent ?? i.tax_percent ?? 0),
+        total_price: Number(i.total_price ?? i.amount ?? 0),
+      })),
+ 
       totals: {
+        amountInWords: numberToWords(Number(sale.total_amount || 0)),
         subtotal: sale.subtotal,
         discount: sale.discount_amount,
         tax_amount: sale.tax_amount,
+        crDrNote: sale.cr_dr_note || 0,
         total_amount: sale.total_amount,
       },
+ 
+      gstBreakup,
+ 
+      bank: {
+        name: process.env.BANK_NAME || '',
+        accountName: process.env.BANK_ACCOUNT_NAME || '',
+        accountNo: process.env.BANK_ACCOUNT_NO || '',
+        ifsc: process.env.BANK_IFSC || '',
+      },
+ 
       notes: sale.notes,
     });
-
+ 
     doc.end();
   } catch (err) {
-    errorResponse(res, 'Failed to generate PDF', 500);
+    console.error(err);
+    if (!res.headersSent) {
+      errorResponse(res, 'Failed to generate PDF', 500);
+    }
   }
 };
 
@@ -214,7 +300,7 @@ const recordPayment = async (req, res) => {
 
     await pool.query(
       'INSERT INTO sale_payments (sale_id, amount, payment_method, payment_date, notes, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
-      [sale.id, amount, payment_method || 'cash', pDate, notes || null,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      [sale.id, amount, payment_method || 'cash', pDate, notes || null, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
 
     const { rows: updated } = await pool.query(
