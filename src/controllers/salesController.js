@@ -1,8 +1,8 @@
 const pool = require('../config/database');
 const { successResponse, errorResponse, buildPaginationQuery, buildSortQuery, generateUniqueCode } = require('../utils/helpers');
 const PDFDocument = require('pdfkit');
-const { buildTaxInvoicePDF } = require('../utils/pdfbuilder'); 
-const numberToWords = require('../utils/numberToWords'); 
+const { buildTaxInvoicePDF } = require('../utils/pdfBuilder');
+const numberToWords = require('../utils/numberToWords');
 
 const getAll = async (req, res) => {
   try {
