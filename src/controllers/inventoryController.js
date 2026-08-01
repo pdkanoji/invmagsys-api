@@ -4,7 +4,7 @@ const { successResponse, errorResponse, buildPaginationQuery, buildSortQuery } =
 const getInventory = async (req, res) => {
   try {
     const { page, limit, offset } = buildPaginationQuery(req.query);
-    const { search, warehouse_id, low_stock } = req.query;
+    const { search, warehouse_id, low_stock, status } = req.query;
 
     const conditions = [];
     const params = [];
@@ -13,6 +13,20 @@ const getInventory = async (req, res) => {
       params.push(warehouse_id);
       conditions.push(`i.warehouse_id = $${params.length}`);
     }
+
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      conditions.push(`(LOWER(p.name) LIKE $${params.length} OR LOWER(p.code) LIKE $${params.length})`);
+    }
+
+    if (status === 'low_stock' || (!status && low_stock === 'true')) {
+      conditions.push(`i.available_stock > 0 AND i.available_stock <= COALESCE(p.reorder_level, 0)`);
+    } else if (status === 'out_of_stock') {
+      conditions.push(`i.available_stock <= 0`);
+    } else if (status === 'in_stock') {
+      conditions.push(`i.available_stock > COALESCE(p.reorder_level, 0)`);
+    }
+
     params.push(req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id);
     conditions.push(`p.created_by = $${params.length}`);
 
@@ -36,7 +50,7 @@ const getInventory = async (req, res) => {
     );
 
     const total = rows.length > 0 ? parseInt(rows[0].total_count) : 0;
-    let data = rows.map(r => {
+    const data = rows.map(r => {
       const { total_count, prod_id, prod_name, prod_code, reorder_level, cat_name, unit_abbr, wh_id, wh_name, ...rest } = r;
       return {
         ...rest,
@@ -44,14 +58,6 @@ const getInventory = async (req, res) => {
         warehouse: { id: wh_id, name: wh_name },
       };
     });
-
-    if (search) {
-      const s = search.toLowerCase();
-      data = data.filter(i => i.product?.name?.toLowerCase().includes(s) || i.product?.code?.toLowerCase().includes(s));
-    }
-    if (low_stock === 'true') {
-      data = data.filter(i => i.available_stock <= (i.product?.reorder_level || 0));
-    }
 
     successResponse(res, data, 'Inventory fetched', 200, { meta: { total, page, limit, totalPages: Math.ceil(total / limit) } });
   } catch (err) {
@@ -67,9 +73,9 @@ const stockIn = async (req, res) => {
       [product_id, warehouse_id]
     );
     const inv = rows[0];
-
     if (inv) {
-      await pool.query('UPDATE inventory SET current_stock = $1 WHERE id = $2', [inv.current_stock + quantity, inv.id]);
+      const newStock = Number(inv.current_stock > 0 ? inv.current_stock : 0) + quantity;
+      await pool.query('UPDATE inventory SET current_stock = $1 WHERE id = $2', [newStock, inv.id]);
     } else {
       await pool.query('INSERT INTO inventory (product_id, warehouse_id, current_stock, created_by) VALUES ($1,$2,$3,$4)', [product_id, warehouse_id, quantity, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]);
     }

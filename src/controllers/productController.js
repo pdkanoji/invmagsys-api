@@ -82,13 +82,13 @@ const getById = async (req, res) => {
 const create = async (req, res) => {
   try {
     const code = generateUniqueCode('PRD');
-    const { name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, reorder_level, is_active } = req.body;
+    const { name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level, is_active } = req.body;
     const image_url = req.file ? `/uploads/${req.file.filename}` : null;
 
     const { rows } = await pool.query(
-      `INSERT INTO products (code, name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, reorder_level, is_active, image_url, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [code, name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage || 0, reorder_level || 0, is_active !== false, image_url,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      `INSERT INTO products (code, name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level, is_active, image_url, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [code, name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage || 0, discount_percentage || 0, reorder_level || 0, is_active !== false, image_url,  req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     successResponse(res, rows[0], 'Product created', 201);
   } catch (err) {
@@ -98,11 +98,11 @@ const create = async (req, res) => {
 
 const update = async (req, res) => {
   try {
-    const { name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, reorder_level, is_active } = req.body;
+    const { name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level, is_active } = req.body;
     const image_url = req.file ? `/uploads/${req.file.filename}` : undefined;
 
-    const sets = ['name=$1','brand=$2','description=$3','category_id=$4','unit_id=$5','purchase_price=$6','selling_price=$7','tax_percentage=$8','reorder_level=$9','is_active=$10'];
-    const params = [name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, reorder_level, is_active];
+    const sets = ['name=$1','brand=$2','description=$3','category_id=$4','unit_id=$5','purchase_price=$6','selling_price=$7','tax_percentage=$8','discount_percentage=$9','reorder_level=$10','is_active=$11'];
+    const params = [name, brand, description, category_id, unit_id, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level, is_active];
 
     if (image_url !== undefined) {
       sets.push(`image_url=$${params.length + 1}`);
@@ -159,13 +159,14 @@ const bulkImport = async (req, res) => {
       parseFloat(row['Purchase Price'] || row.purchase_price) || 0,
       parseFloat(row['Selling Price'] || row.selling_price) || 0,
       parseFloat(row['Tax %'] || row.tax_percentage) || 0,
+      parseFloat(row['Discount %'] || row.discount_percentage) || 0,
       parseInt(row['Reorder Level'] || row.reorder_level) || 0,
     ]);
 
     let imported = 0;
     for (const p of products) {
       await pool.query(
-        'INSERT INTO products (code, name, brand, description, purchase_price, selling_price, tax_percentage, reorder_level) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        'INSERT INTO products (code, name, brand, description, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
         p
       );
       imported++;
@@ -197,6 +198,7 @@ const exportProducts = async (req, res) => {
       'Purchase Price': p.purchase_price,
       'Selling Price': p.selling_price,
       'Tax %': p.tax_percentage,
+      'Discount %': p.discount_percentage,
       'Reorder Level': p.reorder_level,
     }));
 

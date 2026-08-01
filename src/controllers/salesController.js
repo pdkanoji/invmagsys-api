@@ -279,10 +279,58 @@ const remove = async (req, res) => {
   }
 };
 
+const updateStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    const allowed = ['pending', 'confirmed', 'delivered', 'cancelled'];
+    if (!status || !allowed.includes(status)) {
+      return errorResponse(res, 'Invalid status value', 400);
+    }
+
+    const { rows } = await pool.query(
+      'UPDATE sales SET status = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING *',
+      [status, req.params.id]
+    );
+
+    if (!rows[0]) return errorResponse(res, 'Sale not found', 404);
+    successResponse(res, rows[0], 'Sale status updated');
+  } catch (err) {
+    errorResponse(res, 'Failed to update sale status', 500);
+  }
+};
+
+const getLastPrice = async (req, res) => {
+  try {
+    const { product_id, customer_id } = req.query;
+    if (!product_id) {
+      return errorResponse(res, 'Product id is required', 400);
+    }
+
+    const conditions = ['s.deleted_at IS NULL', 'si.product_id = $1'];
+    const params = [product_id];
+    if (customer_id !== undefined && customer_id !== null && customer_id !== '') {
+      params.push(customer_id);
+      conditions.push('s.customer_id = $2');
+    }
+
+    const query = `SELECT si.unit_price FROM sales s
+      JOIN sale_items si ON si.sale_id = s.id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY s.sale_date DESC, s.created_at DESC
+      LIMIT 1`;
+
+    const { rows } = await pool.query(query, params);
+    successResponse(res, { price: rows[0]?.unit_price ?? null });
+  } catch (err) {
+    errorResponse(res, 'Failed to fetch last price', 500);
+  }
+};
+
 const recordPayment = async (req, res) => {
   try {
     const { amount, payment_method, payment_date, notes } = req.body;
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+    const paymentAmount = parseFloat(amount);
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
       return errorResponse(res, 'Valid payment amount is required', 400);
     }
 
@@ -293,21 +341,24 @@ const recordPayment = async (req, res) => {
     if (!sRows[0]) return errorResponse(res, 'Sale not found', 404);
 
     const sale = sRows[0];
-    const newPaid = parseFloat(sale.paid_amount) + parseFloat(amount);
-    const total = parseFloat(sale.total_amount);
-    const paymentStatus = newPaid >= total ? 'paid' : newPaid > 0 ? 'partial' : 'unpaid';
+    const currentPaid = parseFloat(sale.paid_amount || 0);
+    const totalAmount = parseFloat(sale.total_amount);
+    const newPaid = currentPaid + paymentAmount;
+    const paymentStatus = newPaid >= totalAmount ? 'paid' : newPaid > 0 ? 'partial' : 'unpaid';
     const pDate = payment_date || new Date().toISOString().split('T')[0];
+    const method = payment_method || 'cash';
 
     await pool.query(
       'INSERT INTO sale_payments (sale_id, amount, payment_method, payment_date, notes, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
-      [sale.id, amount, payment_method || 'cash', pDate, notes || null, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      [sale.id, paymentAmount, method, pDate, notes || null, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
 
     const { rows: updated } = await pool.query(
       'UPDATE sales SET paid_amount=$1, payment_status=$2, payment_method=$3, payment_date=$4, payment_notes=$5 WHERE id=$6 RETURNING *',
-      [newPaid, paymentStatus, payment_method || 'cash', pDate, notes || null, sale.id]
+      [newPaid, paymentStatus, method, pDate, notes || null, sale.id]
     );
 
+    if (!updated[0]) return errorResponse(res, 'Failed to update sale payment status', 500);
     successResponse(res, updated[0], 'Payment recorded');
   } catch (err) {
     errorResponse(res, 'Failed to record payment', 500);
@@ -328,7 +379,7 @@ const getPaymentHistory = async (req, res) => {
 
     const data = rows.map(({ first_name, last_name, ...r }) => ({
       ...r,
-      created_by_user: first_name ? { first_name, last_name } : null,
+      created_by_user: first_name || last_name ? { first_name, last_name } : null,
     }));
 
     successResponse(res, data, 'Payment history fetched');
@@ -337,4 +388,4 @@ const getPaymentHistory = async (req, res) => {
   }
 };
 
-module.exports = { getAll, getById, create, generatePDF, remove, recordPayment, getPaymentHistory };
+module.exports = { getAll, getById, create, generatePDF, remove, recordPayment, getPaymentHistory, updateStatus, getLastPrice };

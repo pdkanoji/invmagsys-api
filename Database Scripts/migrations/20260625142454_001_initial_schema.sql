@@ -168,6 +168,7 @@ CREATE TABLE products (
   purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   selling_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   tax_percentage DECIMAL(5,2) DEFAULT 0,
+  discount_percentage DECIMAL(5,2) DEFAULT 0,
   reorder_level INTEGER DEFAULT 0,
   image_url TEXT,
   is_active BOOLEAN DEFAULT TRUE,

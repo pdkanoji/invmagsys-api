@@ -5,11 +5,13 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
 router.get('/', ctrl.getAll);
+router.get('/last-price', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.getLastPrice);
 router.get('/:id/pdf', ctrl.generatePDF);
-router.get('/:id/payment-history', ctrl.getPaymentHistory);
+router.get('/:id/payment-history', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.getPaymentHistory);
 router.get('/:id', ctrl.getById);
 router.post('/', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.create);
 router.patch('/:id/payment', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.recordPayment);
+router.patch('/:id/status', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.updateStatus);
 router.delete('/:id', authorize('super_admin', 'admin'), ctrl.remove);
 
 module.exports = router;
