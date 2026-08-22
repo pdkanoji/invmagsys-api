@@ -16,7 +16,7 @@ const getDashboard = async (req, res) => {
       pool.query('SELECT i.current_stock, i.available_stock, i.reserved_stock, i.damaged_stock, p.reorder_level, p.name AS product_name, p.code AS product_code FROM inventory i LEFT JOIN products p ON p.id = i.product_id WHERE (p.created_by = $1 OR p.created_by IN(SELECT admin_id FROM users WHERE id =$1))', [req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]),
       pool.query('SELECT total_amount, purchase_date, status FROM purchases WHERE deleted_at IS NULL AND (created_by = $1 OR created_by IN(SELECT admin_id FROM users WHERE id =$1))', [req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]),
       pool.query('SELECT s.total_amount, s.sale_date, s.status, si.quantity, si.unit_price, pr.purchase_price,pr.name AS product_name,pr.code AS product_code FROM sales s LEFT JOIN sale_items si ON si.sale_id = s.id LEFT JOIN products pr ON pr.id = si.product_id WHERE s.deleted_at IS NULL AND (s.created_by = $1 OR s.created_by IN(SELECT admin_id FROM users WHERE id =$1))', [req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]),
-      pool.query('SELECT it.*, p.name AS product_name, p.code AS product_code FROM inventory_transactions it LEFT JOIN products p ON p.id = it.product_id WHERE (it.created_by = $1 OR it.created_by IN(SELECT admin_id FROM users WHERE id =$1)) ORDER BY it.created_at DESC LIMIT 10', [req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]),
+      pool.query('SELECT it.*, p.name AS product_name, p.code AS product_code FROM inventory_transactions it LEFT JOIN products p ON p.id = it.product_id WHERE (it.created_by = $1 OR it.created_by IN(SELECT admin_id FROM users WHERE id =$1)) ORDER BY it.created_at DESC LIMIT 5', [req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]),
     ]);
 
     const totalProducts = parseInt(productCount[0].count);
@@ -92,6 +92,7 @@ const getDashboard = async (req, res) => {
       topSellingProducts,
     });
   } catch (err) {
+    console.log(err);
     errorResponse(res, 'Failed to load dashboard', 500);
   }
 };
