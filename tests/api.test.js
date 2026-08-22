@@ -217,6 +217,44 @@ describe('Dashboard API Tests', () => {
 
 describe('Helper Utilities', () => {
   const { buildPaginationQuery, buildSortQuery, generateUniqueCode } = require('../src/utils/helpers');
+  const { getRequiredProductImportColumns, getProductImportSampleColumns, getDuplicateProductKey, normalizeProductImportRow } = require('../src/utils/productImport');
+
+  it('should use product name as the duplicate key regardless of brand', () => {
+    expect(getDuplicateProductKey('Desk Lamp')).toBe('desk lamp');
+    expect(getDuplicateProductKey(' Desk Lamp ')).toBe('desk lamp');
+    expect(getDuplicateProductKey('DESK LAMP')).toBe('desk lamp');
+  });
+
+  it('should expose the minimum required product import columns', () => {
+    expect(getRequiredProductImportColumns()).toEqual(['name', 'purchase_price', 'selling_price']);
+  });
+
+  it('should include brand and unit in the sample import file', () => {
+    expect(getProductImportSampleColumns()).toEqual(['name', 'brand', 'unit', 'purchase_price', 'selling_price']);
+  });
+
+  it('should normalize product import data for required and optional fields', () => {
+    const normalized = normalizeProductImportRow({
+      name: ' Desk Lamp ',
+      purchase_price: '250.50',
+      selling_price: '399.99',
+      category: 'Electronics',
+      brand: 'Ultra',
+      unit: 'pcs',
+      is_active: 'true',
+      tax_percentage: '12.5',
+      reorder_level: '5',
+    });
+
+    expect(normalized.name).toBe('Desk Lamp');
+    expect(normalized.purchase_price).toBe(250.5);
+    expect(normalized.selling_price).toBe(399.99);
+    expect(normalized.category).toBe('Electronics');
+    expect(normalized.unit).toBe('pcs');
+    expect(normalized.is_active).toBe(true);
+    expect(normalized.tax_percentage).toBe(12.5);
+    expect(normalized.reorder_level).toBe(5);
+  });
 
   it('buildPaginationQuery should default to page 1, limit 20', () => {
     const result = buildPaginationQuery({});

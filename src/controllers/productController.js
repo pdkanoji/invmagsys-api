@@ -1,6 +1,124 @@
 const pool = require('../config/database');
+const XLSX = require('xlsx');
 const { successResponse, errorResponse, buildPaginationQuery, buildSortQuery, generateUniqueCode } = require('../utils/helpers');
 const { buildScopeWhere } = require('../middleware/auth');
+const { getRequiredProductImportColumns, getProductImportSampleColumns, getDuplicateProductKey, normalizeProductImportRow } = require('../utils/productImport');
+
+const PRODUCT_IMPORT_BATCH_SIZE = 500;
+
+const normalizeHeader = (value = '') => String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
+const getColumnValue = (row, keys) => {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== '') return row[key];
+  }
+  return null;
+};
+
+const getImportSampleCsv = () => {
+  const headers = getProductImportSampleColumns();
+  const row = ['Desk Lamp', 'Ultra', 'pcs', '250.50', '399.99'];
+  return [headers, row].map(columns => columns.join(',')).join('\n') + '\n';
+};
+
+const resolveImportLookups = async (conn, rows) => {
+  const categories = new Map();
+  const units = new Map();
+  const categoryNames = [...new Set(rows.map(r => (r.category || '').trim()).filter(Boolean))];
+  const unitNames = [...new Set(rows.map(r => (r.unit || '').trim()).filter(Boolean))];
+
+  if (categoryNames.length) {
+    const { rows: categoryRows } = await conn.query(
+      'SELECT id, LOWER(name) AS name_key FROM categories WHERE deleted_at IS NULL AND LOWER(name) = ANY($1)',
+      [categoryNames.map(name => name.toLowerCase())]
+    );
+    categoryRows.forEach(row => categories.set(row.name_key, row.id));
+  }
+
+  if (unitNames.length) {
+    const { rows: unitRows } = await conn.query(
+      `SELECT id, LOWER(name) AS name_key, LOWER(abbreviation) AS abbr_key
+       FROM units WHERE (LOWER(name) = ANY($1) OR LOWER(abbreviation) = ANY($2))`,
+      [unitNames.map(name => name.toLowerCase()), unitNames.map(name => name.toLowerCase())]
+    );
+    unitRows.forEach(row => {
+      if (row.name_key) units.set(row.name_key, row.id);
+      if (row.abbr_key) units.set(row.abbr_key, row.id);
+    });
+  }
+
+  return { categories, units };
+};
+
+const insertProductBatch = async (conn, req, items) => {
+  if (!items.length) return [];
+
+  let paramIndex = 1;
+  const placeholders = [];
+  const values = [];
+  const createdBy = req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id;
+
+  items.forEach((item) => {
+    const rowPlaceholders = [];
+    const rowValues = [
+      item.code,
+      item.name,
+      item.brand,
+      item.category_id,
+      item.unit_id,
+      item.description,
+      item.barcode,
+      item.purchase_price,
+      item.selling_price,
+      item.tax_percentage,
+      item.discount_percentage,
+      item.reorder_level,
+      item.is_active,
+      createdBy,
+    ];
+
+    rowValues.forEach(() => {
+      rowPlaceholders.push(`$${paramIndex}`);
+      paramIndex += 1;
+    });
+
+    placeholders.push(`(${rowPlaceholders.join(',')})`);
+    values.push(...rowValues);
+  });
+
+  const query = `
+    INSERT INTO products (code, name, brand, category_id, unit_id, description, barcode, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level, is_active, created_by)
+    VALUES ${placeholders.join(',')}
+    RETURNING *
+  `;
+
+  const { rows } = await conn.query(query, values);
+  return rows;
+};
+
+const insertProductBatchWithFallback = async (conn, req, batch, failedRecords) => {
+  if (!batch.length) return 0;
+
+  try {
+    const inserted = await insertProductBatch(conn, req, batch);
+    return inserted.length;
+  } catch (error) {
+    let insertedCount = 0;
+    for (const item of batch) {
+      try {
+        await insertProductBatch(conn, req, [item]);
+        insertedCount += 1;
+      } catch (itemError) {
+        failedRecords.push({
+          rowNumber: item.rowNumber,
+          product: item.name,
+          reason: itemError.message || 'Database validation error',
+        });
+      }
+    }
+    return insertedCount;
+  }
+};
 
 const getAll = async (req, res) => {
   try {
@@ -146,35 +264,144 @@ const remove = async (req, res) => {
 const bulkImport = async (req, res) => {
   try {
     if (!req.file) return errorResponse(res, 'File required', 400);
-    const XLSX = require('xlsx');
+
     const workbook = XLSX.readFile(req.file.path);
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(sheet);
+    if (!sheet) return errorResponse(res, 'Import file is empty or invalid', 400);
 
-    const products = rows.map(row => [
-      generateUniqueCode('PRD'),
-      row['Product Name'] || row.name,
-      row['Brand'] || row.brand || null,
-      row['Description'] || row.description || null,
-      parseFloat(row['Purchase Price'] || row.purchase_price) || 0,
-      parseFloat(row['Selling Price'] || row.selling_price) || 0,
-      parseFloat(row['Tax %'] || row.tax_percentage) || 0,
-      parseFloat(row['Discount %'] || row.discount_percentage) || 0,
-      parseInt(row['Reorder Level'] || row.reorder_level) || 0,
-    ]);
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: false, blankrows: false });
+    if (!rawRows.length) return errorResponse(res, 'No records found in file', 400);
 
-    let imported = 0;
-    for (const p of products) {
-      await pool.query(
-        'INSERT INTO products (code, name, brand, description, purchase_price, selling_price, tax_percentage, discount_percentage, reorder_level) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-        p
-      );
-      imported++;
+    const normalizedRows = rawRows.map((row, index) => {
+      const normalizedEntry = {};
+      Object.entries(row).forEach(([key, value]) => {
+        normalizedEntry[normalizeHeader(key)] = value;
+      });
+      return { rowNumber: index + 2, row: normalizedEntry };
+    });
+
+    const importRows = [];
+    const failedRecords = [];
+    const allValidRows = [];
+
+    for (const entry of normalizedRows) {
+      const { rowNumber, row } = entry;
+      try {
+        const normalized = normalizeProductImportRow(row);
+        const lookupRow = {
+          rowNumber,
+          name: normalized.name,
+          brand: normalized.brand,
+          category: normalized.category,
+          unit: normalized.unit,
+          ...normalized,
+        };
+        allValidRows.push(lookupRow);
+      } catch (error) {
+        failedRecords.push({
+          rowNumber,
+          product: getColumnValue(row, ['name', 'product_name', 'product', 'item_name']) || 'N/A',
+          reason: error.message,
+        });
+      }
     }
 
-    successResponse(res, { imported }, `${imported} products imported`);
+    if (!allValidRows.length) {
+      return successResponse(res, {
+        processed: rawRows.length,
+        imported: 0,
+        failed: failedRecords.length,
+        failed_records: failedRecords,
+      }, 'Import completed with validation errors', 200);
+    }
+
+    const client = await pool.connect();
+    const { categories, units } = await resolveImportLookups(client, allValidRows);
+    let imported = 0;
+    let processed = 0;
+    const duplicateKeys = new Set();
+    const seenInImport = new Set();
+
+    const rowsWithIds = allValidRows.map((item) => ({
+      ...item,
+      code: generateUniqueCode('PRD'),
+      category_id: item.category ? categories.get(String(item.category).trim().toLowerCase()) || null : null,
+      unit_id: item.unit ? units.get(String(item.unit).trim().toLowerCase()) || null : null,
+    }));
+
+    const existingProducts = await client.query(
+      `SELECT LOWER(name) AS name_key
+       FROM products WHERE deleted_at IS NULL AND LOWER(name) = ANY($1)`,
+      [rowsWithIds.map(item => getDuplicateProductKey(item.name))]
+    );
+
+    existingProducts.rows.forEach((item) => duplicateKeys.add(item.name_key));
+
+    try {
+      await client.query('BEGIN');
+
+      for (let i = 0; i < rowsWithIds.length; i += PRODUCT_IMPORT_BATCH_SIZE) {
+        const batch = rowsWithIds.slice(i, i + PRODUCT_IMPORT_BATCH_SIZE);
+        const batchResults = [];
+
+        for (const item of batch) {
+          const duplicateKey = getDuplicateProductKey(item.name);
+          if (duplicateKeys.has(duplicateKey) || seenInImport.has(duplicateKey)) {
+            failedRecords.push({
+              rowNumber: item.rowNumber,
+              product: item.name,
+              reason: 'Duplicate product already exists',
+            });
+            continue;
+          }
+
+          seenInImport.add(duplicateKey);
+          batchResults.push({
+            ...item,
+            category_id: item.category_id,
+            unit_id: item.unit_id,
+            code: item.code,
+          });
+        }
+
+        if (batchResults.length) {
+          imported += await insertProductBatchWithFallback(client, req, batchResults, failedRecords);
+        }
+
+        processed += batch.length;
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const uniqueFailed = failedRecords.filter((record, index, array) =>
+      array.findIndex(item => item.rowNumber === record.rowNumber && item.product === record.product && item.reason === record.reason) === index
+    );
+
+    successResponse(res, {
+      processed: rawRows.length,
+      imported,
+      failed: uniqueFailed.length,
+      failed_records: uniqueFailed,
+    }, `Import completed. ${imported} products imported successfully.`, 200);
   } catch (err) {
-    errorResponse(res, 'Import failed', 500);
+    errorResponse(res, err.message || 'Import failed', 500);
+  }
+};
+
+const exportImportSample = async (req, res) => {
+  try {
+    const csv = getImportSampleCsv();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="product-import-sample.csv"');
+    res.send(csv);
+  } catch (err) {
+    errorResponse(res, 'Failed to generate import sample', 500);
   }
 };
 
@@ -215,4 +442,4 @@ const exportProducts = async (req, res) => {
   }
 };
 
-module.exports = { getAll, getById, create, update, remove, bulkImport, exportProducts };
+module.exports = { getAll, getById, create, update, remove, bulkImport, exportImportSample, exportProducts };

@@ -28,7 +28,8 @@ const generateCode = (prefix, id) => {
 
 const generateUniqueCode = (prefix) => {
   const timestamp = Date.now().toString(36).toUpperCase();
-  return `${prefix}-${timestamp}`;
+  const randomPart = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `${prefix}-${timestamp}-${randomPart}`;
 };
 
 module.exports = { buildPaginationQuery, buildSortQuery, successResponse, errorResponse, generateCode, generateUniqueCode };
