@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/categoryController');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, requirePermission } = require('../middleware/auth');
 router.use(authenticate);
-router.get('/', ctrl.getAll);
-router.get('/:id', ctrl.getById);
-router.post('/', authorize('super_admin', 'admin', 'manager'), ctrl.create);
-router.put('/:id', authorize('super_admin', 'admin', 'manager'), ctrl.update);
-router.delete('/:id', authorize('super_admin', 'admin'), ctrl.remove);
+router.get('/', requirePermission('categories', 'view'), ctrl.getAll);
+router.get('/:id', requirePermission('categories', 'view'), ctrl.getById);
+router.post('/', authorize('super_admin', 'admin', 'manager'), requirePermission('categories', 'create'), ctrl.create);
+router.put('/:id', authorize('super_admin', 'admin', 'manager'), requirePermission('categories', 'edit'), ctrl.update);
+router.delete('/:id', authorize('super_admin', 'admin'), requirePermission('categories', 'delete'), ctrl.remove);
 module.exports = router;

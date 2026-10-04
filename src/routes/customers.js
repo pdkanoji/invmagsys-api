@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/customerController');
-const { authenticate, authorize } = require('../middleware/auth');
+const { authenticate, authorize, requirePermission } = require('../middleware/auth');
 router.use(authenticate);
-router.get('/', ctrl.getAll);
-router.get('/:id', ctrl.getById);
-router.post('/', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.create);
-router.put('/:id', authorize('super_admin', 'admin', 'manager', 'sales_user'), ctrl.update);
-router.delete('/:id', authorize('super_admin', 'admin'), ctrl.remove);
+router.get('/', requirePermission('customers', 'view'), ctrl.getAll);
+router.get('/:id', requirePermission('customers', 'view'), ctrl.getById);
+router.post('/', authorize('super_admin', 'admin', 'manager', 'sales_user'), requirePermission('customers', 'create'), ctrl.create);
+router.put('/:id', authorize('super_admin', 'admin', 'manager', 'sales_user'), requirePermission('customers', 'edit'), ctrl.update);
+router.delete('/:id', authorize('super_admin', 'admin'), requirePermission('customers', 'delete'), ctrl.remove);
 module.exports = router;

@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/notificationController');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requirePermission } = require('../middleware/auth');
 router.use(authenticate);
-router.get('/', ctrl.getAll);
-router.post('/check-stock', ctrl.checkLowStock);
-router.patch('/mark-all-read', ctrl.markAllRead);
-router.patch('/:id/read', ctrl.markRead);
+router.get('/', requirePermission('notifications', 'view'), ctrl.getAll);
+router.post('/check-stock', requirePermission('notifications', 'create'), ctrl.checkLowStock);
+router.patch('/mark-all-read', requirePermission('notifications', 'edit'), ctrl.markAllRead);
+router.patch('/:id/read', requirePermission('notifications', 'edit'), ctrl.markRead);
 module.exports = router;

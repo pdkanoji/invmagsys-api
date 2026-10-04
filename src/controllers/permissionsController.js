@@ -1,5 +1,6 @@
 const pool = require('../config/database');
 const { successResponse, errorResponse } = require('../utils/helpers');
+const { permissionMapFromRows } = require('../utils/rolePermissions');
 
 /**
  * @swagger
@@ -25,16 +26,7 @@ const getMyPermissions = async (req, res) => {
       [roleName]
     );
 
-    const permissions = {};
-    for (const row of rows) {
-      permissions[row.module] = {
-        view:   row.can_view,
-        create: row.can_create,
-        edit:   row.can_edit,
-        delete: row.can_delete,
-      };
-    }
-
+    const permissions = permissionMapFromRows(rows);
     successResponse(res, { role: roleName, permissions });
   } catch (err) {
     errorResponse(res, 'Failed to fetch permissions', 500);

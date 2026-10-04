@@ -24,6 +24,26 @@ jest.mock('../src/config/database', () => {
           rowCount: 1,
         });
       }
+      if (s.includes('from module_permissions')) {
+        return Promise.resolve({
+          rows: [
+            { module: 'dashboard', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'products', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'categories', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'inventory', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'purchases', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'sales', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'suppliers', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'customers', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'warehouses', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'reports', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'users', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'roles', can_view: true, can_create: true, can_edit: true, can_delete: true },
+            { module: 'audit_logs', can_view: true, can_create: false, can_edit: false, can_delete: false },
+            { module: 'notifications', can_view: true, can_create: false, can_edit: false, can_delete: false },
+          ],
+        });
+      }
       if (s.includes('insert into') || s.includes('update ') || s.includes('delete from')) {
         return Promise.resolve({ rows: [], rowCount: 1 });
       }
@@ -212,6 +232,77 @@ describe('Dashboard API Tests', () => {
       .set('Authorization', `Bearer ${authToken}`);
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+});
+
+describe('Role permission management', () => {
+  const db = require('../src/config/database');
+
+  it('should persist selected permissions when creating a role', async () => {
+    db.query.mockImplementation((sql, params) => {
+      const s = (sql || '').toLowerCase();
+      if (s.includes('select id from roles where lower(name) = lower')) {
+        return Promise.resolve({ rows: [] });
+      }
+      if (s.includes('insert into roles')) {
+        return Promise.resolve({ rows: [{ id: 'role-uuid-2', name: 'Custom Manager', description: 'Custom manager role', created_by: 'user-uuid-1' }] });
+      }
+      if (s.includes('insert into module_permissions')) {
+        return Promise.resolve({ rows: [{ role_name: 'Custom Manager', module: 'products', can_view: true, can_create: false, can_edit: false, can_delete: false }] });
+      }
+      if (s.includes('from users') || s.includes('update users')) {
+        return Promise.resolve({ rows: [{ id: 'user-uuid-1', email: 'admin@test.com', first_name: 'Admin', last_name: 'User', role_id: 'role-uuid-1', is_active: true, role_name: 'super_admin', total_count: '1' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await request(app)
+      .post('/api/roles')
+      .set('Authorization', `Bearer ${authToken}`)
+      .send({
+        name: 'Custom Manager',
+        description: 'Role with core inventory access',
+        permissions: {
+          products: { view: true, create: false, edit: false, delete: false },
+          sales: { view: true, create: true, edit: false, delete: false },
+        },
+      });
+
+    expect(res.statusCode).toBe(201);
+    expect(db.query.mock.calls.some(([sql]) => String(sql).toLowerCase().includes('insert into module_permissions'))).toBe(true);
+  });
+
+  it('should include role permissions when fetching a role by id', async () => {
+    db.query.mockImplementation((sql) => {
+      const s = (sql || '').toLowerCase();
+      if (s.includes('from users') || s.includes('update users')) {
+        return Promise.resolve({
+          rows: [{ id: 'user-uuid-1', email: 'admin@test.com', first_name: 'Admin', last_name: 'User', role_id: 'role-uuid-1', is_active: true, role_name: 'super_admin', total_count: '1' }],
+        });
+      }
+      if (s.includes('from roles r') && s.includes('where r.id =')) {
+        return Promise.resolve({
+          rows: [{ id: 'role-uuid-1', name: 'admin', description: 'Admin role', created_by: 'user-uuid-1', creator_first: 'Admin', creator_last: 'User' }],
+        });
+      }
+      if (s.includes('from module_permissions')) {
+        return Promise.resolve({
+          rows: [
+            { module: 'products', can_view: true, can_create: true, can_edit: true, can_delete: false },
+            { module: 'sales', can_view: true, can_create: false, can_edit: true, can_delete: false },
+          ],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await request(app)
+      .get('/api/roles/role-uuid-1')
+      .set('Authorization', `Bearer ${authToken}`);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.permissions.products.view).toBe(true);
+    expect(res.body.data.permissions.sales.create).toBe(false);
   });
 });
 

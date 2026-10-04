@@ -5,6 +5,7 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { swaggerUi, swaggerSpec } = require('./config/swagger');
 const errorHandler = require('./middleware/errorHandler');
+const auditLog = require('./middleware/auditLog');
 const logger = require('./config/logger');
 const path = require('path');
 
@@ -62,6 +63,7 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use('/api', auditLog());
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

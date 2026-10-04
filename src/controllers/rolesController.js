@@ -1,5 +1,6 @@
 const pool = require('../config/database');
 const { successResponse, errorResponse, buildPaginationQuery, buildSortQuery } = require('../utils/helpers');
+const { normalizePermissionMap, syncRolePermissions, getRolePermissions } = require('../utils/rolePermissions');
 
 /**
  * Build a scope WHERE clause based on the requesting user's role.
@@ -83,7 +84,6 @@ const getById = async (req, res) => {
     );
     if (!rows[0]) return errorResponse(res, 'Role not found', 404);
 
-    // Scope check for non-super_admin
     const role = req.user.roles?.name;
     if (role !== 'super_admin' && rows[0].created_by) {
       const adminId = role === 'admin' ? req.user.id : req.user.admin_id;
@@ -95,7 +95,12 @@ const getById = async (req, res) => {
     }
 
     const { creator_first, creator_last, ...r } = rows[0];
-    successResponse(res, { ...r, created_by_user: creator_first ? { first_name: creator_first, last_name: creator_last } : null });
+    const permissions = await getRolePermissions(pool, r.name);
+    successResponse(res, {
+      ...r,
+      permissions,
+      created_by_user: creator_first ? { first_name: creator_first, last_name: creator_last } : null,
+    });
   } catch (err) {
     errorResponse(res, 'Failed to fetch role', 500);
   }
@@ -103,20 +108,22 @@ const getById = async (req, res) => {
 
 const create = async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, description, permissions } = req.body;
     if (!name || name.trim().length < 3) {
       return errorResponse(res, 'Role name must be at least 3 characters', 400);
     }
 
-    const { rows: existing } = await pool.query('SELECT id FROM roles WHERE LOWER(name) = LOWER($1)', [name.trim()]);
+    const roleName = name.trim();
+    const { rows: existing } = await pool.query('SELECT id FROM roles WHERE LOWER(name) = LOWER($1)', [roleName]);
     if (existing[0]) return errorResponse(res, 'Role name already exists', 400);
 
     const { rows } = await pool.query(
       'INSERT INTO roles (name, description, created_by) VALUES ($1, $2, $3) RETURNING *',
-      [name.trim(), description || null, req.user.id]
+      [roleName, description || null, req.user.id]
     );
 
-    successResponse(res, rows[0], 'Role created', 201);
+    const normalizedPermissions = await syncRolePermissions(pool, roleName, permissions || {});
+    successResponse(res, { ...rows[0], permissions: normalizedPermissions }, 'Role created', 201);
   } catch (err) {
     errorResponse(res, 'Failed to create role', 500);
   }
@@ -124,24 +131,26 @@ const create = async (req, res) => {
 
 const update = async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, description, permissions } = req.body;
     if (!name || name.trim().length < 3) {
       return errorResponse(res, 'Role name must be at least 3 characters', 400);
     }
 
+    const roleName = name.trim();
     const { rows: existing } = await pool.query(
       'SELECT id FROM roles WHERE LOWER(name) = LOWER($1) AND id != $2',
-      [name.trim(), req.params.id]
+      [roleName, req.params.id]
     );
     if (existing[0]) return errorResponse(res, 'Role name already exists', 400);
 
     const { rows } = await pool.query(
       'UPDATE roles SET name=$1, description=$2, updated_at=NOW() WHERE id=$3 RETURNING *',
-      [name.trim(), description || null, req.params.id]
+      [roleName, description || null, req.params.id]
     );
     if (!rows[0]) return errorResponse(res, 'Role not found', 404);
 
-    successResponse(res, rows[0], 'Role updated');
+    const normalizedPermissions = await syncRolePermissions(pool, roleName, permissions || {});
+    successResponse(res, { ...rows[0], permissions: normalizedPermissions }, 'Role updated');
   } catch (err) {
     errorResponse(res, 'Failed to update role', 500);
   }

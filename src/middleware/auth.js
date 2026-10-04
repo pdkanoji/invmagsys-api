@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
+const { getRolePermissions } = require('../utils/rolePermissions');
 
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -46,6 +47,37 @@ const authorize = (...roles) => {
   };
 };
 
+const requirePermission = (moduleName, action = 'view') => {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+      }
+
+      const roleName = req.user.roles?.name;
+      if (!roleName) {
+        return res.status(403).json({ success: false, message: 'Forbidden - no role assigned' });
+      }
+
+      if (roleName === 'super_admin') return next();
+
+      const permissions = await getRolePermissions(pool, roleName);
+      const permission = permissions[moduleName] || { view: false, create: false, edit: false, delete: false };
+
+      if (!permission[action]) {
+        return res.status(403).json({
+          success: false,
+          message: `Forbidden - missing ${action} permission for ${moduleName}`,
+        });
+      }
+
+      next();
+    } catch (error) {
+      return res.status(500).json({ success: false, message: 'Permission check failed' });
+    }
+  };
+};
+
 /**
  * Build a parameterized scope WHERE fragment for role-based data isolation.
  *
@@ -76,4 +108,4 @@ function buildScopeWhere(user, alias, existing = [], column = 'admin_id') {
   return { fragment, params: [...existing, adminId] };
 }
 
-module.exports = { authenticate, authorize, buildScopeWhere };
+module.exports = { authenticate, authorize, requirePermission, buildScopeWhere };

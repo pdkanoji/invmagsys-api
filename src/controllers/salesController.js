@@ -4,6 +4,8 @@ const PDFDocument = require('pdfkit');
 const { buildTaxInvoicePDF } = require('../utils/pdfBuilder');
 const numberToWords = require('../utils/numberToWords');
 
+const roundCurrency = (amount) => Math.round((amount + Number.EPSILON) * 100) / 100;
+
 const getAll = async (req, res) => {
   try {
     const { page, limit, offset } = buildPaginationQuery(req.query);
@@ -80,33 +82,66 @@ const getById = async (req, res) => {
 const create = async (req, res) => {
   try {
     const { customer_id, warehouse_id, sale_date, due_date, items, notes, discount_amount } = req.body;
+    const orderDiscount = Number(discount_amount || 0);
 
+    if (!Number.isFinite(orderDiscount) || orderDiscount < 0) {
+      return errorResponse(res, 'Discount amount must be a non-negative number', 400);
+    }
+
+    const productDiscounts = new Map();
     for (const item of items) {
       const { rows } = await pool.query(
-        'SELECT available_stock FROM inventory WHERE product_id = $1 AND warehouse_id = $2',
+        `SELECT i.available_stock, p.discount_percentage
+         FROM inventory i
+         JOIN products p ON p.id = i.product_id
+         WHERE i.product_id = $1 AND i.warehouse_id = $2`,
         [item.product_id, warehouse_id]
       );
       if (!rows[0] || rows[0].available_stock < item.quantity) {
         return errorResponse(res, `Insufficient stock for product ${item.product_id}`, 400);
       }
+
+      const productDiscount = Number(rows[0].discount_percentage || 0);
+      if (!Number.isFinite(productDiscount) || productDiscount < 0 || productDiscount > 100) {
+        return errorResponse(res, `Invalid discount configured for product ${item.product_id}`, 400);
+      }
+      productDiscounts.set(item.product_id, productDiscount);
     }
 
     const sale_number = generateUniqueCode('INV');
-    let subtotal = 0, tax_amount = 0;
+    let subtotal = 0, productDiscountAmount = 0, tax_amount = 0;
     const saleItems = items.map(item => {
-      const taxAmt = (item.unit_price * item.quantity * (item.tax_percentage || 0)) / 100;
-      const disc = (item.unit_price * item.quantity * (item.discount_percentage || 0)) / 100;
-      const total = (item.unit_price * item.quantity) - disc + taxAmt;
-      subtotal += item.unit_price * item.quantity;
+      const grossAmount = roundCurrency(Number(item.unit_price) * Number(item.quantity));
+      const discountPercentage = productDiscounts.get(item.product_id) || 0;
+      const discountAmount = roundCurrency(grossAmount * discountPercentage / 100);
+      const taxableAmount = roundCurrency(grossAmount - discountAmount);
+      const taxAmt = roundCurrency(taxableAmount * Number(item.tax_percentage || 0) / 100);
+      const total = roundCurrency(taxableAmount + taxAmt);
+      subtotal += grossAmount;
+      productDiscountAmount += discountAmount;
       tax_amount += taxAmt;
-      return { ...item, tax_amount: taxAmt, total_price: total };
+      return {
+        ...item,
+        discount_percentage: discountPercentage,
+        tax_amount: taxAmt,
+        total_price: total,
+      };
     });
 
-    const total_amount = subtotal - (discount_amount || 0) + tax_amount;
+    subtotal = roundCurrency(subtotal);
+    productDiscountAmount = roundCurrency(productDiscountAmount);
+    tax_amount = roundCurrency(tax_amount);
+    const remainingSaleAmount = roundCurrency(subtotal - productDiscountAmount);
+    if (orderDiscount > remainingSaleAmount) {
+      return errorResponse(res, 'Discount amount cannot exceed the remaining sale amount', 400);
+    }
+
+    const totalDiscountAmount = roundCurrency(productDiscountAmount + orderDiscount);
+    const total_amount = roundCurrency(subtotal - totalDiscountAmount + tax_amount);
     const { rows } = await pool.query(
       `INSERT INTO sales (sale_number, customer_id, warehouse_id, sale_date, due_date, subtotal, discount_amount, tax_amount, total_amount, notes, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [sale_number, customer_id, warehouse_id, sale_date, due_date, subtotal, discount_amount || 0, tax_amount, total_amount, notes, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
+      [sale_number, customer_id, warehouse_id, sale_date, due_date, subtotal, totalDiscountAmount, tax_amount, total_amount, notes, req.user.role_name.includes('admin') ? req.user.id : req.user.admin_id]
     );
     const sale = rows[0];
 
@@ -168,16 +203,18 @@ const generatePDF = async (req, res) => {
     // ---- build GST-rate breakup (12/18/28 rows like the sample) ----
     const ratesMap = {};
     items.forEach((i) => {
-      const rate = Number(i.gst_percent ?? i.tax_percent ?? 0);
+      const rate = Number(i.tax_percentage ?? i.gst_percent ?? i.tax_percent ?? 0);
       const qty = Number(i.quantity || 0);
       const unitPrice = Number(i.unit_price || i.price || 0);
-      const discPct = Number(i.discount_percent || 0);
-      const taxable = Number(i.taxable_amount ?? qty * unitPrice);
+      const discPct = Number(i.discount_percentage ?? i.discount_percent ?? 0);
+      const taxable = Number(i.taxable_amount ?? qty * unitPrice * (1 - discPct / 100));
       const taxAmt = Number(i.tax_amount ?? (taxable * rate) / 100);
+      const discountAmount = qty * unitPrice * discPct / 100;
  
       if (!ratesMap[rate]) ratesMap[rate] = { rate, total: 0, sch: 0, disc: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0 };
       ratesMap[rate].total += taxable;
       ratesMap[rate].taxable += taxable;
+      ratesMap[rate].disc += discountAmount;
       ratesMap[rate].igst += sale.is_igst ? taxAmt : 0;
       if (!sale.is_igst) {
         ratesMap[rate].cgst += taxAmt / 2;
@@ -233,7 +270,7 @@ const generatePDF = async (req, res) => {
         hsn: i.hsn_code || '',
         quantity: Number(i.quantity || 0),
         mrp: Number(i.mrp || i.unit_price || 0),
-        discount: Number(i.discount_percent || 0),
+        discount: Number(i.discount_percentage ?? i.discount_percent ?? 0),
         unit_price: Number(i.unit_price || i.price || 0),
         gst_percent: Number(i.gst_percent ?? i.tax_percent ?? 0),
         total_price: Number(i.total_price ?? i.amount ?? 0),
